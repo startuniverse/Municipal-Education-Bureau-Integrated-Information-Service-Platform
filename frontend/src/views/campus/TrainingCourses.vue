@@ -302,7 +302,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Refresh, User, Timer, View, UserFilled, CircleCheck, Picture } from '@element-plus/icons-vue'
-import { getTrainingCourses, getCourseDetail, enrollCourse, getEvaluations, getCourseRating } from '@/api/training'
+import { getTrainingCourses, getCourseDetail, enrollCourse, getEvaluations, getCourseRating, getMyCourses } from '@/api/training'
 import { useUserStore } from '@/store/modules/user'
 
 const userStore = useUserStore()
@@ -425,21 +425,44 @@ const handleCurrentChange = (val) => {
 const showCourseDetail = async (course) => {
   try {
     loading.value = true
+
+    // 验证用户信息
+    if (!userStore.userInfo || !userStore.userInfo.id) {
+      throw new Error('用户信息未加载，请重新登录')
+    }
+
     // 获取详情（会增加浏览次数）
     const detail = await getCourseDetail(course.id)
+    if (!detail) {
+      throw new Error('获取课程详情失败')
+    }
     currentCourse.value = detail
 
-    // 检查是否已报名
+    // 检查是否已报名 - 处理可能的空值情况
     const myCoursesRes = await getMyCourses({ studentId: userStore.userInfo.id })
-    isEnrolled.value = myCoursesRes.some(c => c.course.id === course.id)
+    isEnrolled.value = Array.isArray(myCoursesRes)
+      ? myCoursesRes.some(c => c.course && c.course.id === course.id)
+      : false
 
-    // 获取评分信息
+    // 获取评分信息 - 处理可能的空值情况
     const ratingRes = await getCourseRating(course.id)
-    ratingInfo.value = ratingRes
+    ratingInfo.value = ratingRes || { averageRating: 0, totalEvaluations: 0 }
 
     detailDialogVisible.value = true
   } catch (error) {
-    ElMessage.error('加载课程详情失败')
+    console.error('课程详情加载失败:', error)
+    // 根据错误信息提供更具体的提示
+    if (error.message && error.message.includes('课程不存在')) {
+      ElMessage.error('课程不存在或已被删除')
+    } else if (error.message && error.message.includes('课程未发布')) {
+      ElMessage.error('课程尚未发布')
+    } else if (error.message && error.message.includes('用户信息')) {
+      ElMessage.error('用户信息未加载，请重新登录')
+    } else if (error.response && error.response.status === 401) {
+      ElMessage.error('登录已过期，请重新登录')
+    } else {
+      ElMessage.error('加载课程详情失败，请稍后重试')
+    }
   } finally {
     loading.value = false
   }

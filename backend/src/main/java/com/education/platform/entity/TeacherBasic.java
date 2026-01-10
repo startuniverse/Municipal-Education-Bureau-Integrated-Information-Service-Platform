@@ -20,6 +20,11 @@ public class TeacherBasic extends BaseEntity {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 用户ID（用于管理员手动添加时关联）
+     */
+    private Long userId;
+
+    /**
      * 教师ID
      */
     private Long teacherId;

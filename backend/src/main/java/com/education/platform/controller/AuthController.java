@@ -142,6 +142,7 @@ public class AuthController {
             Long schoolId = null;
             LambdaQueryWrapper<School> schoolWrapper = new LambdaQueryWrapper<>();
             schoolWrapper.eq(School::getSchoolName, request.getSchoolName());
+            schoolWrapper.last("LIMIT 1");  // 防止返回多条记录
             School existingSchool = schoolMapper.selectOne(schoolWrapper);
 
             if (existingSchool != null) {
@@ -165,6 +166,7 @@ public class AuthController {
             LambdaQueryWrapper<Class> classWrapper = new LambdaQueryWrapper<>();
             classWrapper.eq(Class::getSchoolId, schoolId);
             classWrapper.eq(Class::getClassName, request.getClassName());
+            classWrapper.last("LIMIT 1");  // 防止返回多条记录
             Class existingClass = classMapper.selectOne(classWrapper);
 
             if (existingClass != null) {

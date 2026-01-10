@@ -29,9 +29,13 @@ service.interceptors.request.use(
 service.interceptors.response.use(
   (response) => {
     const res = response.data
+    console.log('=== API Response Debug ===')
+    console.log('URL:', response.config.url)
+    console.log('Response data:', res)
 
     // 如果返回的状态码不是200，说明有问题
     if (res.code !== 200) {
+      console.error('API Error - Code:', res.code, 'Message:', res.message)
       ElMessage.error(res.message || '系统错误')
       return Promise.reject(new Error(res.message || '系统错误'))
     }

@@ -35,13 +35,6 @@
         <el-table-column type="index" label="序号" width="60" align="center" />
         <el-table-column prop="teacherName" label="姓名" width="120" align="center" />
         <el-table-column prop="teacherNumber" label="工号" width="120" align="center" />
-        <el-table-column prop="gender" label="性别" width="80" align="center">
-          <template #default="{ row }">
-            <el-tag :type="row.gender === 'male' ? 'primary' : 'danger'">
-              {{ row.gender === 'male' ? '男' : '女' }}
-            </el-tag>
-          </template>
-        </el-table-column>
         <el-table-column prop="department" label="部门" width="140" align="center" />
         <el-table-column prop="position" label="职务" width="140" align="center" />
         <el-table-column prop="title" label="职称" width="120" align="center" />
@@ -342,6 +335,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Edit, Delete, View, Search, Refresh, Document, Upload } from '@element-plus/icons-vue'
+import { useUserStore } from '@/store/modules/user'
 import {
   getTeacherBasicList,
   addTeacherBasic,
@@ -364,6 +358,9 @@ import TeacherWorkload from './detail/TeacherWorkload.vue'
 
 // 加载状态
 const loading = ref(false)
+
+// 用户store
+const userStore = useUserStore()
 
 // 搜索参数
 const searchParams = reactive({
@@ -438,13 +435,33 @@ const fetchTeacherList = async () => {
       keyword: searchParams.keyword || undefined,
       schoolId: searchParams.schoolId || undefined
     }
-    const res = await getTeacherBasicList(params)
-    if (res.code === 200) {
-      teacherList.value = res.data.records
-      total.value = res.data.total
+    console.log('=== 获取教师列表参数 ===')
+    console.log('当前用户:', userStore.userInfo)
+    console.log('搜索参数:', params)
+
+    // request.js的响应拦截器已经返回了res.data（PageResult对象）
+    const pageResult = await getTeacherBasicList(params)
+    console.log('后端返回的PageResult:', pageResult)
+
+    // 直接访问PageResult的属性
+    teacherList.value = pageResult.records || []
+    total.value = pageResult.total || 0
+
+    console.log('教师列表数据:', teacherList.value)
+    console.log('总数:', total.value)
+
+    if (teacherList.value.length === 0) {
+      console.log('教师列表为空，可能原因：')
+      console.log('1. 数据库中没有符合条件的教师记录')
+      console.log('2. schoolId过滤条件过于严格')
+      console.log('3. 教师记录的deleted字段为1')
+      ElMessage.warning('暂无教师数据')
+    } else {
+      ElMessage.success(`成功加载 ${total.value} 条教师记录`)
     }
   } catch (error) {
-    ElMessage.error('获取教师列表失败')
+    console.error('获取教师列表异常:', error)
+    ElMessage.error('获取教师列表失败: ' + (error.response?.data?.message || error.message || '未知错误'))
   } finally {
     loading.value = false
   }
@@ -517,13 +534,12 @@ const handleDelete = (row) => {
     }
   ).then(async () => {
     try {
-      const res = await deleteTeacherBasic(row.id)
-      if (res.code === 200) {
-        ElMessage.success('删除成功')
-        fetchTeacherList()
-      }
+      await deleteTeacherBasic(row.id)
+      ElMessage.success('删除成功')
+      fetchTeacherList()
     } catch (error) {
-      ElMessage.error('删除失败')
+      console.error('删除失败:', error)
+      ElMessage.error('删除失败: ' + (error.response?.data?.message || error.message || '未知错误'))
     }
   }).catch(() => {})
 }
@@ -541,20 +557,28 @@ const handleSubmit = async () => {
   await formRef.value.validate(async (valid) => {
     if (valid) {
       try {
-        let res
-        if (dialogType.value === 'add') {
-          res = await addTeacherBasic(formData)
-        } else {
-          res = await updateTeacherBasic(formData)
+        // 准备提交数据，添加schoolId
+        const submitData = {
+          ...formData,
+          schoolId: userStore.userInfo?.schoolId || null
         }
 
-        if (res.code === 200) {
-          ElMessage.success(dialogType.value === 'add' ? '新增成功' : '更新成功')
-          dialogVisible.value = false
-          fetchTeacherList()
+        console.log('=== 提交教师数据 ===')
+        console.log('提交数据:', submitData)
+        console.log('当前用户:', userStore.userInfo)
+
+        if (dialogType.value === 'add') {
+          await addTeacherBasic(submitData)
+        } else {
+          await updateTeacherBasic(submitData)
         }
+
+        ElMessage.success(dialogType.value === 'add' ? '新增成功' : '更新成功')
+        dialogVisible.value = false
+        fetchTeacherList()
       } catch (error) {
-        ElMessage.error(dialogType.value === 'add' ? '新增失败' : '更新失败')
+        console.error('提交失败:', error)
+        ElMessage.error((dialogType.value === 'add' ? '新增失败' : '更新失败') + ': ' + (error.response?.data?.message || error.message || '未知错误'))
       }
     }
   })
@@ -584,7 +608,25 @@ const formatDate = (date) => {
   return date
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 确保用户信息已加载
+  if (!userStore.userInfo) {
+    try {
+      await userStore.fetchUserInfo()
+    } catch (error) {
+      console.error('获取用户信息失败:', error)
+    }
+  }
+
+  // 根据用户角色设置schoolId过滤条件
+  if (userStore.userInfo && userStore.userInfo.schoolId) {
+    // 如果是学校管理员，只显示本校教师
+    searchParams.schoolId = userStore.userInfo.schoolId
+  } else if (userStore.hasRole('ADMIN')) {
+    // 如果是系统管理员，显示所有学校教师
+    searchParams.schoolId = null
+  }
+
   fetchTeacherList()
 })
 </script>
@@ -679,9 +721,15 @@ onMounted(() => {
 }
 
 :deep(.el-table__header-wrapper th) {
-  color: #fff;
-  font-weight: 600;
-  background: transparent;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  background: linear-gradient(135deg, #409EFF 0%, #337ecc 100%) !important;
+  border-color: #337ecc !important;
+}
+
+:deep(.el-table__header-wrapper .cell) {
+  color: #ffffff !important;
+  font-weight: 600 !important;
 }
 
 :deep(.el-table__body-wrapper .el-table__row:hover) {

@@ -5,10 +5,12 @@ import com.education.platform.entity.Role;
 import com.education.platform.entity.School;
 import com.education.platform.entity.Student;
 import com.education.platform.entity.Teacher;
+import com.education.platform.entity.TeacherBasic;
 import com.education.platform.entity.User;
 import com.education.platform.mapper.RoleMapper;
 import com.education.platform.mapper.SchoolMapper;
 import com.education.platform.mapper.StudentMapper;
+import com.education.platform.mapper.TeacherBasicMapper;
 import com.education.platform.mapper.TeacherMapper;
 import com.education.platform.mapper.UserMapper;
 import com.education.platform.service.IUserService;
@@ -49,6 +51,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
     @Autowired
     private TeacherMapper teacherMapper;
+
+    @Autowired
+    private TeacherBasicMapper teacherBasicMapper;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -160,7 +165,28 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
                 teacher.setStatus(1);  // 在职状态
                 teacher.setDeleted(0);
 
+                // 插入教师记录并获取ID
                 teacherMapper.insert(teacher);
+                Long teacherId = teacher.getId();
+
+                // 自动创建教师基础信息（teacher_basic表）
+                TeacherBasic teacherBasic = new TeacherBasic();
+                teacherBasic.setUserId(user.getId());  // 关联用户ID
+                teacherBasic.setTeacherId(teacherId);  // 关联教师ID
+                teacherBasic.setTeacherName(user.getRealName());  // 使用用户真实姓名
+                teacherBasic.setTeacherNumber("T" + user.getId());  // 教师工号
+                teacherBasic.setGender(null);  // 性别暂未填写
+                teacherBasic.setIdCard(null);  // 身份证号暂未填写
+                teacherBasic.setPhone(user.getPhone());  // 手机号从用户信息获取
+                teacherBasic.setEmail(user.getEmail());  // 邮箱从用户信息获取
+                teacherBasic.setSchoolId(user.getSchoolId());  // 学校ID
+                teacherBasic.setDepartment(user.getDepartment());  // 部门/院系
+                teacherBasic.setPosition(null);  // 职务暂未填写
+                teacherBasic.setTitle(user.getTitle());  // 职称从用户信息获取
+                teacherBasic.setStatus(1);  // 在职状态
+                teacherBasic.setDeleted(0);  // 逻辑删除标记
+
+                teacherBasicMapper.insert(teacherBasic);
             }
 
             return roleAssigned;

@@ -9,6 +9,7 @@ import com.education.platform.service.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -22,6 +23,7 @@ import java.util.Map;
  *
  * @author Education Platform Team
  */
+@Slf4j
 @RestController
 @RequestMapping("/teacher-info")
 @Tag(name = "教师信息管理", description = "教师信息管理相关接口")
@@ -66,6 +68,12 @@ public class TeacherInfoController {
     @Autowired
     private ITeacherWorkloadStatisticsService teacherWorkloadStatisticsService;
 
+    @Autowired
+    private ITeacherService teacherService;
+
+    @Autowired
+    private IUserService userService;
+
     // ==================== 教师基础信息 ====================
 
     @GetMapping("/basic/list")
@@ -77,31 +85,246 @@ public class TeacherInfoController {
             @Parameter(description = "当前页") @RequestParam(defaultValue = "1") Long current,
             @Parameter(description = "每页条数") @RequestParam(defaultValue = "10") Long size) {
 
+        log.info("=== 教师列表查询开始 ===");
+        log.info("请求参数: schoolId={}, keyword={}, current={}, size={}", schoolId, keyword, current, size);
+
         Page<TeacherBasic> page = new Page<>(current, size);
         LambdaQueryWrapper<TeacherBasic> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(TeacherBasic::getDeleted, 0);
 
         if (schoolId != null) {
             wrapper.eq(TeacherBasic::getSchoolId, schoolId);
+            log.info("添加schoolId过滤: {}", schoolId);
+        } else {
+            log.info("schoolId为null，不添加学校过滤条件");
         }
         if (keyword != null && !keyword.trim().isEmpty()) {
             wrapper.like(TeacherBasic::getTeacherName, keyword);
+            log.info("添加keyword过滤: {}", keyword);
         }
 
         wrapper.orderByDesc(TeacherBasic::getCreatedAt);
+
+        // 打印生成的SQL
+        String sql = wrapper.getCustomSqlSegment();
+        log.info("生成的SQL条件: {}", sql);
+
         Page<TeacherBasic> result = teacherBasicService.page(page, wrapper);
+
+        log.info("查询结果: 总数={}, 当前页数据量={}", result.getTotal(), result.getRecords().size());
+        log.info("当前页数据: {}", result.getRecords());
+
         return ApiResult.success(PageResult.of(result));
     }
 
     @PostMapping("/basic/add")
-    @Operation(summary = "新增教师基础信息", description = "新增教师基础信息")
+    @Operation(summary = "新增教师基础信息", description = "新增教师基础信息，支持两种方式：1) 提供teacher_id直接创建；2) 提供userId自动创建Teacher记录")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResult<Boolean> addBasicInfo(@RequestBody TeacherBasic teacherBasic) {
         try {
-            teacherBasic.setDeleted(0);
-            boolean result = teacherBasicService.save(teacherBasic);
+            log.info("=== 开始新增教师基础信息 ===");
+            log.info("接收参数: teacherId={}, userId={}, teacherNumber={}, teacherName={}",
+                teacherBasic.getTeacherId(), teacherBasic.getUserId(),
+                teacherBasic.getTeacherNumber(), teacherBasic.getTeacherName());
+
+            // 情况1：提供了teacher_id，直接创建TeacherBasic
+            if (teacherBasic.getTeacherId() != null) {
+                log.info("模式1: 使用现有teacher_id={}", teacherBasic.getTeacherId());
+
+                // 验证teacher_id对应的Teacher记录是否存在
+                Teacher teacher = teacherService.getById(teacherBasic.getTeacherId());
+                if (teacher == null) {
+                    log.error("指定的teacher_id={}在teacher表中不存在", teacherBasic.getTeacherId());
+                    return ApiResult.error("新增失败: 指定的教师ID不存在，请先创建Teacher记录");
+                }
+
+                // 新增: 检查teacher_basic表中是否已存在该teacher_id
+                LambdaQueryWrapper<TeacherBasic> checkWrapper = new LambdaQueryWrapper<>();
+                checkWrapper.eq(TeacherBasic::getTeacherId, teacherBasic.getTeacherId())
+                           .eq(TeacherBasic::getDeleted, 0);
+                TeacherBasic existingBasic = teacherBasicService.getOne(checkWrapper);
+                if (existingBasic != null) {
+                    log.error("teacher_basic表中已存在teacher_id={}的记录", teacherBasic.getTeacherId());
+                    return ApiResult.error("新增失败: 该教师的基础信息已存在，请勿重复添加");
+                }
+
+                log.info("Teacher记录验证通过: {}", teacher);
+                teacherBasic.setDeleted(0);
+                boolean result = teacherBasicService.save(teacherBasic);
+                log.info("TeacherBasic保存成功: {}", result);
+                return ApiResult.success(result);
+            }
+
+            // 情况2：提供了user_id，需要先创建Teacher记录
+            if (teacherBasic.getUserId() != null) {
+                log.info("模式2: 使用userId={}创建Teacher记录", teacherBasic.getUserId());
+
+                // 检查该userId是否已经存在Teacher记录
+                LambdaQueryWrapper<Teacher> wrapper = new LambdaQueryWrapper<>();
+                wrapper.eq(Teacher::getUserId, teacherBasic.getUserId())
+                       .eq(Teacher::getDeleted, 0);
+                Teacher existingTeacher = teacherService.getOne(wrapper);
+
+                Long teacherId;
+                if (existingTeacher != null) {
+                    log.warn("userId={}已存在对应的Teacher记录，ID={}",
+                        teacherBasic.getUserId(), existingTeacher.getId());
+                    // 使用现有的Teacher记录
+                    teacherId = existingTeacher.getId();
+                } else {
+                    // 创建新的Teacher记录
+                    Teacher teacher = new Teacher();
+                    teacher.setUserId(teacherBasic.getUserId());
+                    teacher.setTeacherNumber(teacherBasic.getTeacherNumber());
+                    teacher.setTitle(teacherBasic.getTitle());
+                    teacher.setSubject(teacherBasic.getDepartment());
+                    teacher.setHireDate(teacherBasic.getHireDate() != null ? teacherBasic.getHireDate() : java.time.LocalDate.now());
+                    teacher.setStatus(1);
+                    teacher.setDeleted(0);
+
+                    log.info("准备创建Teacher记录: {}", teacher);
+                    teacherService.save(teacher);
+                    log.info("Teacher记录创建成功，ID: {}", teacher.getId());
+                    teacherId = teacher.getId();
+                }
+
+                // 新增: 检查teacher_basic表中是否已存在该teacher_id
+                LambdaQueryWrapper<TeacherBasic> checkWrapper = new LambdaQueryWrapper<>();
+                checkWrapper.eq(TeacherBasic::getTeacherId, teacherId)
+                           .eq(TeacherBasic::getDeleted, 0);
+                TeacherBasic existingBasic = teacherBasicService.getOne(checkWrapper);
+                if (existingBasic != null) {
+                    log.error("teacher_basic表中已存在teacher_id={}的记录", teacherId);
+                    return ApiResult.error("新增失败: 该教师的基础信息已存在，请勿重复添加");
+                }
+
+                teacherBasic.setTeacherId(teacherId);
+                teacherBasic.setDeleted(0);
+                boolean result = teacherBasicService.save(teacherBasic);
+                log.info("TeacherBasic保存成功: {}", result);
+                return ApiResult.success(result);
+            }
+
+            // 情况3：既没有teacher_id也没有user_id，直接创建完整的教师信息
+            log.info("模式3: 直接创建完整的教师信息");
+
+            // 1. 检查用户名是否已存在
+            String username = teacherBasic.getTeacherNumber();
+            User existingUser = userService.getByUsername(username);
+            Long userId;
+            Long teacherId;
+
+            if (existingUser != null) {
+                log.warn("用户名{}已存在，ID={}", username, existingUser.getId());
+                userId = existingUser.getId();
+
+                // 检查该用户是否已有Teacher记录
+                LambdaQueryWrapper<Teacher> teacherWrapper = new LambdaQueryWrapper<>();
+                teacherWrapper.eq(Teacher::getUserId, userId)
+                             .eq(Teacher::getDeleted, 0);
+                Teacher existingTeacher = teacherService.getOne(teacherWrapper);
+
+                if (existingTeacher != null) {
+                    log.warn("用户{}已有Teacher记录，ID={}", userId, existingTeacher.getId());
+                    teacherId = existingTeacher.getId();
+                } else {
+                    // 创建新的Teacher记录
+                    Teacher teacher = new Teacher();
+                    teacher.setUserId(userId);
+                    teacher.setTeacherNumber(teacherBasic.getTeacherNumber());
+                    teacher.setTitle(teacherBasic.getTitle());
+                    teacher.setSubject(teacherBasic.getDepartment());
+                    teacher.setHireDate(teacherBasic.getHireDate() != null ? teacherBasic.getHireDate() : java.time.LocalDate.now());
+                    teacher.setStatus(1);
+                    teacher.setDeleted(0);
+
+                    log.info("准备创建Teacher记录: {}", teacher);
+                    teacherService.save(teacher);
+                    log.info("Teacher记录创建成功，ID: {}", teacher.getId());
+                    teacherId = teacher.getId();
+                }
+            } else {
+                // 创建新的User记录
+                User user = new User();
+                user.setUsername(teacherBasic.getTeacherNumber()); // 使用工号作为用户名
+                user.setPassword("$2a$10$0FbH16apzWwgCl5/S6.FBezzcCMOkAuOkkTQk1JKo4vs02jztBsIq"); // 默认密码: admin
+                user.setRealName(teacherBasic.getTeacherName());
+                user.setPhone(teacherBasic.getPhone());
+                user.setEmail(teacherBasic.getEmail());
+                user.setIdCard(teacherBasic.getIdCard());
+                user.setGender("male".equals(teacherBasic.getGender()) ? 1 : ("female".equals(teacherBasic.getGender()) ? 2 : 0));
+                user.setBirthDate(teacherBasic.getBirthDate());
+                user.setSchoolId(teacherBasic.getSchoolId());
+                user.setDepartment(teacherBasic.getDepartment());
+                user.setTitle(teacherBasic.getTitle());
+                user.setStatus(1);
+                user.setDeleted(0);
+
+                log.info("准备创建User记录: {}", user);
+                Boolean userResult = userService.registerTeacher(user);
+                if (!userResult) {
+                    log.error("创建User记录失败");
+                    return ApiResult.error("新增失败: 创建用户失败");
+                }
+                log.info("User记录创建成功，ID: {}", user.getId());
+                userId = user.getId();
+
+                // 查询创建的Teacher记录
+                LambdaQueryWrapper<Teacher> teacherWrapper = new LambdaQueryWrapper<>();
+                teacherWrapper.eq(Teacher::getUserId, userId)
+                             .eq(Teacher::getDeleted, 0);
+                Teacher teacher = teacherService.getOne(teacherWrapper);
+                if (teacher == null) {
+                    log.error("未找到新创建的Teacher记录");
+                    return ApiResult.error("新增失败: 未找到教师记录");
+                }
+                log.info("找到Teacher记录，ID: {}", teacher.getId());
+                teacherId = teacher.getId();
+            }
+
+            // 2. 检查teacher_basic表中是否已存在该teacher_id
+            LambdaQueryWrapper<TeacherBasic> checkWrapper = new LambdaQueryWrapper<>();
+            checkWrapper.eq(TeacherBasic::getTeacherId, teacherId)
+                       .eq(TeacherBasic::getDeleted, 0);
+            TeacherBasic existingBasic = teacherBasicService.getOne(checkWrapper);
+
+            boolean result;
+            if (existingBasic != null) {
+                // 已存在TeacherBasic记录，更新它
+                log.warn("teacher_basic表中已存在teacher_id={}的记录，执行更新操作", teacherId);
+
+                // 更新现有记录的字段
+                existingBasic.setTeacherName(teacherBasic.getTeacherName());
+                existingBasic.setTeacherNumber(teacherBasic.getTeacherNumber());
+                existingBasic.setGender(teacherBasic.getGender());
+                existingBasic.setBirthDate(teacherBasic.getBirthDate());
+                existingBasic.setIdCard(teacherBasic.getIdCard());
+                existingBasic.setPhone(teacherBasic.getPhone());
+                existingBasic.setEmail(teacherBasic.getEmail());
+                existingBasic.setSchoolId(teacherBasic.getSchoolId());
+                existingBasic.setDepartment(teacherBasic.getDepartment());
+                existingBasic.setPosition(teacherBasic.getPosition());
+                existingBasic.setTitle(teacherBasic.getTitle());
+                existingBasic.setHireDate(teacherBasic.getHireDate());
+                existingBasic.setStatus(teacherBasic.getStatus());
+                existingBasic.setRemarks(teacherBasic.getRemarks());
+
+                result = teacherBasicService.updateById(existingBasic);
+                log.info("TeacherBasic更新成功: {}", result);
+            } else {
+                // 不存在TeacherBasic记录，创建新记录
+                log.info("创建新的TeacherBasic记录");
+                teacherBasic.setTeacherId(teacherId);
+                teacherBasic.setUserId(userId);
+                teacherBasic.setDeleted(0);
+                result = teacherBasicService.save(teacherBasic);
+                log.info("TeacherBasic保存成功: {}", result);
+            }
+
             return ApiResult.success(result);
+
         } catch (Exception e) {
+            log.error("新增教师基础信息失败", e);
             return ApiResult.error("新增失败: " + e.getMessage());
         }
     }
